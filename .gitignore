@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv32/
+venv/
+env/
+
+# Environment Variables (Secrets)
+.env
+
+# Database
+data/*.db
+*.db
+*.sqlite3
+
+# Logs
+*.log
+*_debug*.txt
+collector_hex_dump.txt
+
+# VS Code
+.vscode/
+
+# Excel/CSV exports
+*.csv
+*.xlsx

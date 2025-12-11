@@ -1,0 +1,44 @@
+Collecting flask
+  Using cached flask-3.1.2-py3-none-any.whl.metadata (3.2 kB)
+Collecting flask-cors
+  Using cached flask_cors-6.0.1-py3-none-any.whl.metadata (5.3 kB)
+Collecting pandas
+  Using cached pandas-2.3.3.tar.gz (4.5 MB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Installing backend dependencies: started
+  Installing backend dependencies: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'error'
+  error: subprocess-exited-with-error
+  
+  Preparing metadata (pyproject.toml) did not run successfully.
+  exit code: 1
+  
+  [10 lines of output]
+  + meson setup C:\Users\takuy\AppData\Local\Temp\pip-install-u3g8gr3t\pandas_fb03f0daf9a14ad1922cfb0b4d71bcf5 C:\Users\takuy\AppData\Local\Temp\pip-install-u3g8gr3t\pandas_fb03f0daf9a14ad1922cfb0b4d71bcf5\.mesonpy-e1elf7_i -Dbuildtype=release -Db_ndebug=if-release -Db_vscrt=md --vsenv --native-file=C:\Users\takuy\AppData\Local\Temp\pip-install-u3g8gr3t\pandas_fb03f0daf9a14ad1922cfb0b4d71bcf5\.mesonpy-e1elf7_i\meson-python-native-file.ini
+  The Meson build system
+  Version: 1.10.0
+  Source dir: C:\Users\takuy\AppData\Local\Temp\pip-install-u3g8gr3t\pandas_fb03f0daf9a14ad1922cfb0b4d71bcf5
+  Build dir: C:\Users\takuy\AppData\Local\Temp\pip-install-u3g8gr3t\pandas_fb03f0daf9a14ad1922cfb0b4d71bcf5\.mesonpy-e1elf7_i
+  Build type: native build
+  
+  ..\meson.build:2:0: ERROR: Could not parse vswhere.exe output
+  
+  A full log can be found at C:\Users\takuy\AppData\Local\Temp\pip-install-u3g8gr3t\pandas_fb03f0daf9a14ad1922cfb0b4d71bcf5\.mesonpy-e1elf7_i\meson-logs\meson-log.txt
+  [end of output]
+  
+  note: This error originates from a subprocess, and is likely not a problem with pip.
+
+[notice] A new release of pip is available: 24.3.1 -> 25.3
+[notice] To update, run: python.exe -m pip install --upgrade pip
+error: metadata-generation-failed
+
+Encountered error while generating package metadata.
+
+See above for output.
+
+note: This is an issue with the package mentioned above, not pip.
+hint: See above for details.

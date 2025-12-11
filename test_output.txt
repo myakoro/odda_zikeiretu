@@ -1,0 +1,35 @@
+============================================================
+JV-Link 接続テスト
+============================================================
+JV-Linkオブジェクトを作成中...
+Traceback (most recent call last):
+  File "C:\Users\takuy\AppData\Local\Programs\Python\Python314\Lib\site-packages\win32com\client\dynamic.py", line 81, in _GetGoodDispatch
+    IDispatch = pythoncom.connect(IDispatch)
+pywintypes.com_error: (-2147221021, '操作を利用できません', None, None)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\takuy\Desktop\投資競馬アプリ系\時系列オッズ取得アプリ\src\jvlink_test.py", line 12, in test_jvlink_connection
+    jvlink = win32com.client.Dispatch("JVDTLab.JVLink")
+  File "C:\Users\takuy\AppData\Local\Programs\Python\Python314\Lib\site-packages\win32com\client\__init__.py", line 116, in Dispatch
+    dispatch, userName = dynamic._GetGoodDispatchAndUserName(dispatch, userName, clsctx)
+                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\takuy\AppData\Local\Programs\Python\Python314\Lib\site-packages\win32com\client\dynamic.py", line 101, in _GetGoodDispatchAndUserName
+    return (_GetGoodDispatch(IDispatch, clsctx), userName)
+            ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\takuy\AppData\Local\Programs\Python\Python314\Lib\site-packages\win32com\client\dynamic.py", line 83, in _GetGoodDispatch
+    IDispatch = pythoncom.CoCreateInstance(
+        IDispatch, None, clsctx, pythoncom.IID_IDispatch
+    )
+pywintypes.com_error: (-2147221164, 'クラスが登録されていません', None, None)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\takuy\Desktop\投資競馬アプリ系\時系列オッズ取得アプリ\src\jvlink_test.py", line 48, in <module>
+    jvlink = test_jvlink_connection()
+  File "C:\Users\takuy\Desktop\投資競馬アプリ系\時系列オッズ取得アプリ\src\jvlink_test.py", line 38, in test_jvlink_connection
+    print(f"\u2717 エラーが発生しました: {e}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'cp932' codec can't encode character '\u2717' in position 0: illegal multibyte sequence

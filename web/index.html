@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>投資競馬 - オッズ分析ダッシュボード</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🏇 投資競馬オッズ分析システム</h1>
+            <p class="subtitle">時系列オッズデータ可視化ダッシュボード</p>
+        </header>
+
+        <nav class="tabs">
+            <button class="tab-btn active" data-tab="dashboard">ダッシュボード</button>
+            <button class="tab-btn" data-tab="races">レース一覧</button>
+            <button class="tab-btn" data-tab="analysis">オッズ分析</button>
+            <button class="tab-btn" data-tab="settings">設定</button>
+        </nav>
+
+        <main>
+            <!-- ダッシュボードタブ -->
+            <div id="dashboard" class="tab-content active">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">📊</div>
+                        <div class="stat-info">
+                            <h3>登録レース数</h3>
+                            <p class="stat-value" id="total-races">0</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📈</div>
+                        <div class="stat-info">
+                            <h3>オッズ記録数</h3>
+                            <p class="stat-value" id="total-odds">0</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">🔄</div>
+                        <div class="stat-info">
+                            <h3>監視状態</h3>
+                            <p class="stat-value" id="monitor-status">停止中</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">⏰</div>
+                        <div class="stat-info">
+                            <h3>最終更新</h3>
+                            <p class="stat-value" id="last-update">--:--</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="chart-container">
+                    <h2>リアルタイムオッズ推移</h2>
+                    <canvas id="odds-chart"></canvas>
+                </div>
+            </div>
+
+            <!-- レース一覧タブ -->
+            <div id="races" class="tab-content">
+                <div class="filter-bar">
+                    <input type="date" id="race-date" class="input-field">
+                    <select id="ba-filter" class="input-field">
+                        <option value="">全競馬場</option>
+                        <option value="01">札幌</option>
+                        <option value="02">函館</option>
+                        <option value="03">福島</option>
+                        <option value="04">新潟</option>
+                        <option value="05">東京</option>
+                        <option value="06">中山</option>
+                        <option value="07">中京</option>
+                        <option value="08">京都</option>
+                        <option value="09">阪神</option>
+                        <option value="10">小倉</option>
+                    </select>
+                    <button class="btn-primary" onclick="loadRaces()">検索</button>
+                </div>
+
+                <div class="race-list" id="race-list">
+                    <p class="empty-state">日付を選択してレースを検索してください</p>
+                </div>
+            </div>
+
+            <!-- オッズ分析タブ -->
+            <div id="analysis" class="tab-content">
+                <div class="analysis-panel">
+                    <h2>オッズ変動分析</h2>
+                    <div class="race-selector">
+                        <label>レースID:</label>
+                        <input type="text" id="analysis-race-id" class="input-field" placeholder="例: 202412100501">
+                        <button class="btn-primary" onclick="analyzeRace()">分析開始</button>
+                    </div>
+                    <div id="analysis-result" class="analysis-result">
+                        <p class="empty-state">レースIDを入力して分析を開始してください</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 設定タブ -->
+            <div id="settings" class="tab-content">
+                <div class="settings-panel">
+                    <h2>システム設定</h2>
+                    
+                    <div class="setting-group">
+                        <h3>データ取得設定</h3>
+                        <div class="setting-item">
+                            <label>サービスキー:</label>
+                            <input type="password" id="service-key" class="input-field" placeholder="JRA-VANサービスキー">
+                        </div>
+                        <div class="setting-item">
+                            <label>取得期間:</label>
+                            <input type="number" id="fetch-days" class="input-field" value="7" min="1" max="365">
+                            <span>日前まで</span>
+                        </div>
+                        <button class="btn-primary" onclick="fetchHistoricalData()">過去データ取得</button>
+                    </div>
+
+                    <div class="setting-group">
+                        <h3>リアルタイム監視</h3>
+                        <div class="setting-item">
+                            <label>監視データ種別:</label>
+                            <select id="monitor-type" class="input-field">
+                                <option value="0B12">単勝・複勝</option>
+                                <option value="0B14">馬連</option>
+                                <option value="0B16">馬単</option>
+                                <option value="0B18">3連単</option>
+                            </select>
+                        </div>
+                        <button class="btn-success" onclick="startMonitoring()">監視開始</button>
+                        <button class="btn-danger" onclick="stopMonitoring()">監視停止</button>
+                    </div>
+
+                    <div class="setting-group">
+                        <h3>データベース</h3>
+                        <p>データベースパス: <code>data/odds_history.db</code></p>
+                        <button class="btn-secondary" onclick="exportData()">データエクスポート (CSV)</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <p>&copy; 2025 投資競馬オッズ分析システム | JRA-VAN Data Lab SDK Ver4.9.0</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

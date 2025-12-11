@@ -1,0 +1,327 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Text;
+using JVDTLabLib;
+
+namespace JvLinkOdds_Desktop
+{
+    internal class Program
+    {
+        [STAThread]
+        private static void Main(string[] args)
+        {
+            Console.OutputEncoding = Encoding.UTF8;
+            Console.WriteLine("=== JV-Link 速報オッズ(0B31) → O1 パース & CSV 出力（デスクトップ版） ===");
+
+            // 速報オッズ（単勝・複勝・枠）
+            string dataspec = "0B31";
+
+            // ★ いま成功しているレースID（中京9R）
+            string raceId = "202512070709";
+
+            // ★ CSV 出力先（デスクトップ / 時系列データ / O1Odds.csv）
+            string csvPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                "時系列データ",
+                "O1Odds.csv"
+            );
+
+            // ヘッダー作成（なければ）
+            EnsureCsvHeader(csvPath);
+
+            // JV-Link COM オブジェクト
+            JVLinkClass jv = new JVLinkClass();
+
+            try
+            {
+                // 1. JVInit
+                int rc = jv.JVInit("RtOddsTest");
+                int status = jv.JVStatus();
+                Console.WriteLine($"[JVInit] rc={rc}, JVStatus={status}");
+                if (rc != 0)
+                {
+                    Console.WriteLine("JVInit に失敗したので終了します。");
+                    Console.ReadLine();
+                    return;
+                }
+
+                // 2. JVRTOpen（あなたの JV-Link は dataspec, key の 2引数）
+                rc = jv.JVRTOpen(dataspec, raceId);
+                status = jv.JVStatus();
+                Console.WriteLine($"[JVRTOpen] dataspec={dataspec}, key={raceId}, rc={rc}, JVStatus={status}");
+
+                if (rc != 0)
+                {
+                    Console.WriteLine("→ JVRTOpen(rc != 0) のため終了します。（速報が存在しないだけ）");
+                    Console.ReadLine();
+                    return;
+                }
+
+                // 3. JVGets ループ準備
+                int buffSize = 110000;
+                byte[] buffer = new byte[buffSize];
+                object buffObj = buffer;
+                string fileName = "";
+
+                Encoding sjis = Encoding.GetEncoding("shift_jis");
+                var parser = new O1Parser();
+
+                Console.WriteLine("----- JVGets 開始 -----");
+
+                while (true)
+                {
+                    rc = jv.JVGets(ref buffObj, buffSize, out fileName);
+                    status = jv.JVStatus();
+
+                    string buff = "";
+                    string recId = "";
+
+                    if (buffObj is byte[] bytes)
+                    {
+                        int len = rc > 0 ? rc : 0;
+                        buff = sjis.GetString(bytes, 0, len);
+                        if (buff.Length >= 2)
+                            recId = buff.Substring(0, 2);
+                    }
+
+                    Console.WriteLine($"[JVGets] rc={rc}, JVStatus={status}, fileName={fileName}, recId={recId}");
+
+                    if (rc <= 0)
+                    {
+                        Console.WriteLine("JVGets rc<=0 → 終了（速報では正常）");
+                        break;
+                    }
+
+                    // recId=O1 のときだけパースして CSV
+                    if (recId == "O1")
+                    {
+                        IEnumerable<O1OddsRow> rows = parser.ParseO1(buff);
+                        AppendRowsToCsv(csvPath, rows);
+                        Console.WriteLine($"→ O1 を {csvPath} に追記しました");
+                    }
+
+                    // 次の呼び出しのためにリセット
+                    buffObj = buffer;
+
+                    // 一旦1件で終了（リアルタイム取得版にすぐ拡張できる）
+                    break;
+                }
+            }
+            finally
+            {
+                // 4. JVClose
+                int rcClose = jv.JVClose();
+                int statusClose = jv.JVStatus();
+                Console.WriteLine($"[JVClose] rc={rcClose}, JVStatus={statusClose}");
+            }
+
+            Console.WriteLine("終了するには Enter を押してください。");
+            Console.ReadLine();
+        }
+
+        // =====================================================================
+        // CSV ヘッダ生成
+        // =====================================================================
+        private static void EnsureCsvHeader(string csvPath)
+        {
+            string dir = Path.GetDirectoryName(csvPath);
+
+            if (!Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            if (File.Exists(csvPath)) return;
+
+            using (var sw = new StreamWriter(csvPath, false, Encoding.UTF8))
+            {
+                sw.WriteLine(string.Join(",",
+                    "Year",
+                    "MonthDay",
+                    "JyoCD",
+                    "Kaiji",
+                    "Nichiji",
+                    "RaceNum",
+                    "HappyoTime",
+                    "DataKubun",
+                    "TorokuTosu",
+                    "SyussoTosu",
+                    "Umaban",
+                    "TansyoOdds",
+                    "FukuMinOdds",
+                    "FukuMaxOdds",
+                    "TansyoNinki",
+                    "FukuNinki"
+                ));
+            }
+        }
+
+        private static void AppendRowsToCsv(string csvPath, IEnumerable<O1OddsRow> rows)
+        {
+            using (var sw = new StreamWriter(csvPath, true, Encoding.UTF8))
+            {
+                foreach (var r in rows)
+                {
+                    string line = string.Join(",",
+                        r.Year,
+                        r.MonthDay,
+                        r.JyoCD,
+                        r.Kaiji,
+                        r.Nichiji,
+                        r.RaceNum,
+                        r.HappyoTime,
+                        r.DataKubun,
+                        r.TorokuTosu,
+                        r.SyussoTosu,
+                        r.Umaban,
+                        FormatDecimal(r.TansyoOdds),
+                        FormatDecimal(r.FukuMinOdds),
+                        FormatDecimal(r.FukuMaxOdds),
+                        r.TansyoNinkiRaw,
+                        r.FukuNinkiRaw
+                    );
+                    sw.WriteLine(line);
+                }
+            }
+        }
+
+        private static string FormatDecimal(decimal? value)
+        {
+            if (!value.HasValue) return "";
+            return value.Value.ToString("0.0", CultureInfo.InvariantCulture);
+        }
+    }
+
+    // =====================================================================
+    // O1 パース用クラス
+    // =====================================================================
+
+    internal class O1OddsRow
+    {
+        public string Year { get; set; } = "";
+        public string MonthDay { get; set; } = "";
+        public string JyoCD { get; set; } = "";
+        public string Kaiji { get; set; } = "";
+        public string Nichiji { get; set; } = "";
+        public string RaceNum { get; set; } = "";
+        public string HappyoTime { get; set; } = "";
+        public string DataKubun { get; set; } = "";
+        public string TorokuTosu { get; set; } = "";
+        public string SyussoTosu { get; set; } = "";
+        public string Umaban { get; set; } = "";
+
+        public string TansyoOddsRaw { get; set; } = "";
+        public string FukuMinOddsRaw { get; set; } = "";
+        public string FukuMaxOddsRaw { get; set; } = "";
+
+        public decimal? TansyoOdds { get; set; }
+        public decimal? FukuMinOdds { get; set; }
+        public decimal? FukuMaxOdds { get; set; }
+
+        public string TansyoNinkiRaw { get; set; } = "";
+        public string FukuNinkiRaw { get; set; } = "";
+    }
+
+    internal class O1Parser
+    {
+        private const int RecordLength = 962;
+
+        public IEnumerable<O1OddsRow> ParseO1(string buff)
+        {
+            if (string.IsNullOrEmpty(buff))
+                yield break;
+
+            if (buff.Length < RecordLength)
+                buff = buff.PadRight(RecordLength);
+
+            string recordSpec = Sub(buff, 1, 2);
+            if (recordSpec != "O1")
+                yield break;
+
+            string dataKubun = Sub(buff, 3, 1);
+            string year = Sub(buff, 12, 4);
+            string monthDay = Sub(buff, 16, 4);
+            string jyoCd = Sub(buff, 20, 2);
+            string kaiji = Sub(buff, 22, 2);
+            string nichiji = Sub(buff, 24, 2);
+            string raceNum = Sub(buff, 26, 2);
+            string happyoTime = Sub(buff, 28, 8);
+            string torokuTosu = Sub(buff, 36, 2);
+            string syussoTosu = Sub(buff, 38, 2);
+
+            for (int i = 0; i < 28; i++)
+            {
+                int tansyoStart = 44 + i * 8;
+                int fukuStart = 268 + i * 12;
+
+                string umaban = Sub(buff, tansyoStart, 2);
+                if (string.IsNullOrWhiteSpace(umaban))
+                    continue;
+
+                string tOddsRaw = Sub(buff, tansyoStart + 2, 4);
+                string tNinkiRaw = Sub(buff, tansyoStart + 6, 2);
+
+                string fukuUmaban = Sub(buff, fukuStart, 2);
+                string fMinRaw = Sub(buff, fukuStart + 2, 4);
+                string fMaxRaw = Sub(buff, fukuStart + 6, 4);
+                string fNinkiRaw = Sub(buff, fukuStart + 10, 2);
+
+                bool hasFuku = !string.IsNullOrWhiteSpace(fukuUmaban);
+
+                yield return new O1OddsRow
+                {
+                    Year = year.Trim(),
+                    MonthDay = monthDay.Trim(),
+                    JyoCD = jyoCd.Trim(),
+                    Kaiji = kaiji.Trim(),
+                    Nichiji = nichiji.Trim(),
+                    RaceNum = raceNum.Trim(),
+                    HappyoTime = happyoTime.Trim(),
+                    DataKubun = dataKubun.Trim(),
+                    TorokuTosu = torokuTosu.Trim(),
+                    SyussoTosu = syussoTosu.Trim(),
+                    Umaban = umaban.Trim(),
+
+                    TansyoOddsRaw = tOddsRaw,
+                    TansyoOdds = ParseOdds(tOddsRaw),
+
+                    FukuMinOddsRaw = hasFuku ? fMinRaw : "",
+                    FukuMaxOddsRaw = hasFuku ? fMaxRaw : "",
+                    FukuMinOdds = hasFuku ? ParseOdds(fMinRaw) : (decimal?)null,
+                    FukuMaxOdds = hasFuku ? ParseOdds(fMaxRaw) : (decimal?)null,
+
+                    TansyoNinkiRaw = tNinkiRaw.Trim(),
+                    FukuNinkiRaw = hasFuku ? fNinkiRaw.Trim() : ""
+                };
+            }
+        }
+
+        private static string Sub(string s, int start1Based, int length)
+        {
+            int start = start1Based - 1;
+            if (start >= s.Length) return "";
+            if (start + length > s.Length) length = s.Length - start;
+            return s.Substring(start, length);
+        }
+
+        public static decimal? ParseOdds(string oddsStr)
+        {
+            if (string.IsNullOrWhiteSpace(oddsStr)) return null;
+
+            oddsStr = oddsStr.Trim();
+
+            if (oddsStr == "0000" || oddsStr == "00000")
+                return null;
+            if (oddsStr == "----" || oddsStr == "****" ||
+                oddsStr == "-----" || oddsStr == "*****")
+                return null;
+            if (oddsStr == "9999")
+                return 999.9m;
+
+            if (int.TryParse(oddsStr, out int val))
+                return val / 10.0m;
+
+            return null;
+        }
+    }
+}
