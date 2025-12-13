@@ -20,6 +20,8 @@ data/*.db
 *.log
 *_debug*.txt
 collector_hex_dump.txt
+data/last_attempt.txt
+data/completed_races.log
 
 # VS Code
 .vscode/

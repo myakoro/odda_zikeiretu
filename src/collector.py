@@ -70,35 +70,276 @@ class JVLinkCollector:
         print(f"\n過去データ取得: {start_date} ～ {end_date} (Type={data_spec})")
         
         try:
-            # 時系列取得(0B41)の場合は、JVOpenではなくJVRTOpenで1日ずつ取得する必要がある
-            # (JRA-VANの仕様上、蓄積系JVOpenでは0B41は取得できず、速報系JVRTOpenで過去日付を指定する裏技的な方法になる)
-            
             if data_spec == "0B41":
-                # 日付リストを作成
-                current = datetime.strptime(start_date, "%Y%m%d")
-                end = datetime.strptime(end_date, "%Y%m%d")
+                # 時系列オッズ(0B41)の場合
+                print(f"時系列オッズ(0B41)取得モード (期間: {start_date}-{end_date})")
+                print("※ まず期間内の全開催レースIDを一括検索します (開催のない日は自動スキップ)")
+
+                # 1. StartDateからRACEデータを連続読み込みし、EndDateまでの全レースキーをメモリに格納
+                # {date_str: [key1, key2...]}
+                date_race_map = {}
                 
-                print(f"JVRTOpenによる日次取得モードを開始します (期間: {start_date}-{end_date})")
-                
-                while current <= end:
-                    target_date = current.strftime("%Y%m%d")
-                    print(f"\nProcessing Date: {target_date}...")
+                try:
+                    # JVOpen("RACE", start_date)
+                    res = self.jvlink.JVOpen("RACE", start_date + "000000", 1)
+                    if isinstance(res, tuple): res = res[0]
                     
-                    # JVRTOpen (速報系)
-                    # keyにYYYYMMDDを指定することで、過去の速報データを再生できる
-                    res = self.jvlink.JVRTOpen(data_spec, target_date)
+                    if res != 0:
+                        print(f"  [ERROR] レース情報へのアクセスに失敗しました (Code={res})")
+                        return
+
+                    buff = bytearray(100000)
+                    print(f"  レース開催日をスキャン中...")
                     
-                    if res == 0:
-                        print(f"  [OK] データ取得開始 ({target_date})")
-                        self._read_jvdata()
-                        # JVRTOpenの場合はJVCloseが必要
-                        self.jvlink.JVClose()
-                    elif res == -1:
-                        print(f"  [SKIP] データなし/終了 ({target_date})")
-                    else:
-                         print(f"  [ERROR] JVRTOpen失敗: {res}")
-                         
-                    current += timedelta(days=1)
+                    scan_count = 0
+                    while True:
+                        ret = self.jvlink.JVGets(buff, 100000)
+                        rc = ret[0] if isinstance(ret, tuple) else ret
+                        
+                        if rc == 0: break # End of Data
+                        if rc == -1: continue
+                        
+                        if rc > 0:
+                            if isinstance(ret, tuple) and len(ret) > 1 and ret[1] is not None: 
+                                try:
+                                    data = bytes(ret[1])[:rc]
+                                except:
+                                    data = buff[:rc]
+                            else: 
+                                data = buff[:rc]
+                            
+                            rec_type = data[:2].decode('ascii', errors='ignore')
+                            if rec_type == "RA":
+                                try:
+                                    y = data[11:15].decode('ascii')
+                                    m = data[15:17].decode('ascii')
+                                    d = data[17:19].decode('ascii')
+                                    r_date = f"{y}{m}{d}"
+                                    
+                                    # 終了判定
+                                    if r_date > end_date:
+                                        break
+                                    
+                                    # 開始判定（念のため）
+                                    if r_date < start_date:
+                                        continue
+                                        
+                                    j = data[19:21].decode('ascii')
+                                    r = data[25:27].decode('ascii')
+                                    r_key = f"{y}{m}{d}{j}{r}"
+                                    
+                                    if r_date not in date_race_map:
+                                        date_race_map[r_date] = []
+                                    date_race_map[r_date].append(r_key)
+                                    
+                                    scan_count += 1
+                                    if scan_count % 100 == 0:
+                                        print(f"    Scanning... {r_date} ({scan_count} races found)", end="\r")
+                                except:
+                                    pass
+                    
+                    self.jvlink.JVClose() # RACE connection close
+                    print(f"  スキャン完了: 全{scan_count}レース ({len(date_race_map)}開催日) を発見しました")
+                    
+                    if not date_race_map:
+                        print("  (指定期間内にレース開催が見つかりませんでした)")
+                        return
+
+                    # 2. 日付ごとにまとめて処理
+                    import time
+                    import os
+                    import gc
+                    
+                    # 完了済みレース管理用
+                    CHECKPOINT_FILE = "data/completed_races.log"
+                    ATTEMPT_FILE = "data/last_attempt.txt"
+                    
+                    completed_races = set()
+                    
+                    # 1. 完了済みリストの読み込み
+                    if os.path.exists(CHECKPOINT_FILE):
+                        try:
+                            with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
+                                completed_races = set(line.strip() for line in f if line.strip())
+                            print(f"  [Resume] 過去の完了履歴 {len(completed_races)} 件を読み込みました。")
+                        except:
+                            pass
+                            
+                    # 2. クラッシュ検知（前回、処理中に落ちたかどうか）
+                    if os.path.exists(ATTEMPT_FILE):
+                        try:
+                            with open(ATTEMPT_FILE, "r", encoding="utf-8") as f:
+                                last_attempt_rk = f.read().strip()
+                            
+                            if last_attempt_rk and last_attempt_rk not in completed_races:
+                                print(f"\n" + "!"*60)
+                                print(f"[CRASH DETECTED] 前回、レース {last_attempt_rk} の処理中に強制終了した可能性があります。")
+                                print(f"このレースを「スキップ対象」として登録し、先へ進みます。")
+                                print(f"!"*60 + "\n")
+                                
+                                # スキップリストに追加（完了扱いにする）
+                                try:
+                                    with open(CHECKPOINT_FILE, "a", encoding="utf-8") as f:
+                                        f.write(f"{last_attempt_rk}\n")
+                                    completed_races.add(last_attempt_rk)
+                                except: pass
+                                
+                            # 試行ファイルを削除（検知済みのため）
+                            try: os.remove(ATTEMPT_FILE)
+                            except: pass
+                        except:
+                            pass
+
+                    # 失敗したレースを記録するリスト
+                    failed_races = []
+
+                    def mark_race_complete(rk):
+                        """レース完了を記録"""
+                        try:
+                            with open(CHECKPOINT_FILE, "a", encoding="utf-8") as f:
+                                f.write(f"{rk}\n")
+                            completed_races.add(rk)
+                            # 成功したので試行ファイルを削除
+                            if os.path.exists(ATTEMPT_FILE):
+                                try: os.remove(ATTEMPT_FILE)
+                                except: pass
+                        except:
+                            pass
+                            
+                    def mark_attempt_start(rk):
+                        """処理開始を記録（クラッシュ検知用）"""
+                        try:
+                            with open(ATTEMPT_FILE, "w", encoding="utf-8") as f:
+                                f.write(str(rk))
+                        except:
+                            pass
+
+                    def process_race_with_retry(rk, max_retries=3):
+                        """指定したレースをリトライ付きで処理する. 成功ならTrue"""
+                        for attempt in range(max_retries):
+                            try:
+                                # 2回目以降は少し待つ
+                                if attempt > 0:
+                                    time.sleep(2.0)
+                                    print(f"      -> リトライ中 ({attempt+1}/{max_retries})...")
+                                    
+                                    # ★重要: リトライ時はJVLinkを再初期化する（不安定状態の解消）
+                                    print("      -> [Re-Init] 接続を再確立しています...")
+                                    try:
+                                        self.jvlink.JVClose()
+                                    except: pass
+                                    self.jvlink = None
+                                    gc.collect()
+                                    
+                                    # 再接続
+                                    if not self.connect():
+                                         print("      -> [FATAL] 再接続に失敗しました")
+                                         return False
+                                         
+                                res_rt = self.jvlink.JVRTOpen("0B41", rk)
+                                
+                                if res_rt == 0:
+                                    if self._read_jvdata():
+                                        self.jvlink.JVClose()
+                                        return True
+                                    else:
+                                        print(f"      -> 読み込みエラー。リトライします。")
+                                        self.jvlink.JVClose()
+                                else:
+                                    # エラーコードを表示
+                                    print(f"      -> JVRTOpen失敗 (Code={res_rt})")
+                                    self.jvlink.JVClose() 
+                                    
+                                    # データ無し(-203)や除外(-111)、汎用エラー(-1)の場合はリトライしても無駄なので即終了
+                                    if res_rt == -203 or res_rt == -111 or res_rt == -1:
+                                        print("      -> [SKIP] データが存在しないか、取得できません (Code=-1/-111/-203)。")
+                                        return False
+
+                            except Exception as e:
+                                print(f"      -> [ERROR] 例外発生: {repr(e)}")
+                                try: self.jvlink.JVClose()
+                                except: pass
+                            except Exception as e:
+                                print(f"      -> [ERROR] 例外発生: {repr(e)}")
+                                try: self.jvlink.JVClose()
+                                except: pass
+                        
+                        return False
+
+
+                    # 2. 日付ごとにまとめて処理
+                    sorted_dates = sorted(date_race_map.keys())
+                    
+                    for d_str in sorted_dates:
+                        keys = date_race_map[d_str]
+                        
+                        # 未完了のレースがあるか確認
+                        pending_keys = [k for k in keys if k not in completed_races]
+                        
+                        if not pending_keys:
+                            print(f"Skipping Date: {d_str} (All {len(keys)} races completed)")
+                            continue
+                            
+                        print(f"\nProcessing Date: {d_str} ({len(pending_keys)}/{len(keys)} races)...")
+                        
+                        for i, rk in enumerate(keys):
+                            if rk in completed_races:
+                                continue
+                                
+                            print(f"    - [{i+1}/{len(keys)}] Race {rk} 取得中...", end=" ", flush=True)
+                            
+                            # ★クラッシュ検知用に「今からこれやります」を書く
+                            mark_attempt_start(rk)
+                            
+                            if process_race_with_retry(rk, max_retries=3):
+                                # 成功したらチェックポイント保存 & 試行ファイル削除 (関数内で削除)
+                                mark_race_complete(rk)
+                                print("[OK]")
+                            else:
+                                print(f"[Failed] -> 3回失敗")
+                                failed_races.append(rk)
+                                # 失敗しても、とりあえず次に進むので試行ファイルは消していいかも？
+                                # いや、失敗して落ちてないなら消すべき。
+                                if os.path.exists(ATTEMPT_FILE):
+                                    try: os.remove(ATTEMPT_FILE)
+                                    except: pass
+                            
+                            # JRA-VANサーバー負荷軽減とライブラリ安定のため少し待機
+                            time.sleep(0.1)
+                    
+                    # 3. 取得できなかったデータの再取得試行
+                    if failed_races:
+                        print(f"\n" + "="*50)
+                        print(f"取得失敗したレースが {len(failed_races)} 件あります。")
+                        print(f"再取得を試みます...")
+                        print(f"="*50)
+                        
+                        permanently_failed = []
+                        
+                        for i, rk in enumerate(failed_races):
+                            print(f"    - [再試行 {i+1}/{len(failed_races)}] Race {rk}...")
+                            if not process_race_with_retry(rk, max_retries=3):
+                                print(f"      -> [完全失敗] データが取得できませんでした。")
+                                permanently_failed.append(rk)
+                            else:
+                                print(f"      -> [リカバリ成功]")
+                            time.sleep(0.5) # リトライ時は長めに待機
+                        
+                        if permanently_failed:
+                            print(f"\n" + "!"*50)
+                            print(f"[報告] 以下のレースはデータが存在しないか、取得できませんでした:")
+                            for rk in permanently_failed:
+                                print(f"  - {rk}")
+                            print(f"!"*50)
+                        else:
+                            print(f"\n[報告] 全ての失敗データのリカバリに成功しました！")
+                                
+                except Exception as e:
+                     import traceback
+                     print(f"  [ERROR] 初期化/スキャンエラー: {e}")
+                     traceback.print_exc()
+                     try: self.jvlink.JVClose() 
+                     except: pass
                 
                 print("\n全日程の処理が完了しました")
                 return
@@ -151,7 +392,9 @@ class JVLinkCollector:
                     print("  → 該当データが存在しません")
                 
         except Exception as e:
+            import traceback
             print(f"[ERROR] データ取得エラー: {e}")
+            traceback.print_exc()
         finally:
             if self.jvlink:
                 try:
@@ -160,126 +403,72 @@ class JVLinkCollector:
                     pass
     
     def _read_jvdata(self):
-        """JVDataからデータを読み込む"""
+        """JVDataからデータを読み込む. 成功ならTrue"""
         print("\nデータ読み込み中...")
         record_count = 0
         parser = JVDataParser(DB_PATH)
+        success = True
         
         try:
             loop_count = 0
             while True:
                 loop_count += 1
-                # JVGetsを使用（JVReadは.NET環境でSEHExceptionの原因になる）
-                # byte配列バッファを使用することで安全性を確保
-                buff_size = 50000
-                buff = bytearray(buff_size)  # byte配列バッファ
-                filename = [""]
-                record_spec = [""]
+                buff_size = 40000 # バッファサイズを標準的に戻す（安定重視）
+                buff = bytearray(buff_size)
                 
-                # JVGets: ref object buff, int size を使用
-                # Python(win32com)では、outパラメータ(filename)は戻り値として返されるため引数には含めない
-                # 入力: buff, buff_size
-                # 出力: (result_code, filename) のタプル（予想）
-                
-                # JVGets: ref object buff, int size を使用
-                # Python(win32com)では、outパラメータ(buffも含む?)は戻り値として返される可能性がある
-                
-                # buff_sizeは毎回渡す
-                # retは (result_code, returned_buffer, filename) の可能性がある
                 ret = self.jvlink.JVGets(buff, buff_size)
                 
-                # 戻り値の型確認と展開
                 if isinstance(ret, tuple):
-                    # (result_code, returned_buffer, filename)
                     result = ret[0]
-                    # バッファが戻り値に含まれている場合、そちらを使う
-                    # ret[1] が memoryview や bytes の可能性がある
                     if len(ret) > 1:
                         data_blob = ret[1]
-                        # memoryviewなどの場合、bytesに変換
-                        try:
-                            raw_data = bytes(data_blob)
-                        except:
-                            raw_data = bytes(buff[:result]) if result > 0 else b""
+                        try: raw_data = bytes(data_blob)
+                        except: raw_data = buff[:result] if result > 0 else b""
                     else:
                         raw_data = buff[:result]
-                        
-                    # filenameは3番目の要素
                     filename = ret[2] if len(ret) > 2 else ""
                 else:
-                    # 単一の値の場合（想定外だが）
                     result = ret
                     filename = ""
                     raw_data = buff[:result]
                 
                 if result == 0:
-                    # 正常終了
                     break
                 elif result == -1:
-                    # ファイル切り替え
                     print(f"  ファイル切り替え: {filename}")
                     continue
                 elif result > 0:
-                    # データ取得成功
                     record_count += 1
-                    
-                    # raw_dataは恐らく全バッファサイズ分あるので、result長で切り取る必要があるかも？
-                    # あるいはJVGetsが有効データ分だけ返しているか確認が必要
-                    # 通常は buff[:result] だが、戻り値のblobがサイズ調整されているか不明
-                    # 安全のためスライスする
                     current_data = raw_data[:result]
                     
-                    # レコード種別はデータの先頭2バイト
                     try:
                         rec_type = current_data[:2].decode('ascii', errors='ignore')
                     except:
                         rec_type = "??"
 
-                    # DEBUG: 生データの構造確認
-                    if rec_type == "RA" or rec_type.startswith("O1"):
-                        print(f"\n[{rec_type}] Record Found (Len={len(current_data)})")
-                        print(f"Hex: {current_data[:100].hex()}")
-                        # ASCIIでの表示（デバッグ用）
-                        readable = ''.join([chr(b) if 32 <= b <= 126 else '.' for b in current_data[:100]])
-                        print(f"Str: {readable}")
-                        
-                        # 解析テスト
-                        if rec_type == "RA":
-                            # 試しに現在のオフセットでパースしてみる
-                            try:
-                                year = current_data[18:22].decode('ascii', errors='replace')
-                                name = current_data[112:162].decode('shift_jis', errors='replace').strip()
-                                print(f"Test Parse: Year={year}, Name={name}")
-                            except Exception as e:
-                                print(f"Test Parse Error: {e}")
-                            
-                            # RAとO1の両方が見つかるまで待ちたいが、とりあえずRAが見つかったら構造確認のため一旦停止でも良い
-                            # いや、O1も見たい
-                            pass
-
-                    # レコードタイプに応じて処理
                     if rec_type == "RA":
                         parser.parse_race_record(current_data)
                     elif rec_type.startswith("O"):
                         parser.parse_odds_record(current_data, rec_type)
                         
-                    # デバッグ用に最初の数件で止めるならここで回数制限
-                    # if record_count > 5000: break
-                    
-                    if record_count % 100 == 0:
-                        print(f"  処理済みレコード数: {record_count}")
-                        parser.commit()  # 定期的にコミット
+                    if record_count % 500 == 0:
+                         parser.commit()
                 else:
                     print(f"[WARNING] JVRead エラー: {result}")
+                    success = False
                     break
                     
         except Exception as e:
+            import traceback
             print(f"[ERROR] データ読み込みエラー: {e}")
+            # traceback.print_exc()
+            success = False
         finally:
             parser.commit()
             parser.close()
         
         print(f"\n合計 {record_count} レコードを処理しました")
+        return success
     
     def close(self):
         """接続を閉じる"""
@@ -323,7 +512,7 @@ def main():
         
         dtype_sel = input("選択 [Enterで 1]: ").strip()
         if dtype_sel == "2":
-            data_spec = "0B41"  # 時系列オッズ
+            data_spec = "0B41"  # 時系列オッズ (標準)
             print("→ 時系列オッズ (0B41) を取得します")
         else:
             data_spec = "RACE"  # 確定オッズ
