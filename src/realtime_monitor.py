@@ -42,18 +42,18 @@ class RealtimeOddsMonitor:
             print(f"[ERROR] 接続エラー: {e}")
             return False
     
-    def start_monitoring(self, data_types="0B12"):
+    def start_monitoring(self, data_types="0B31"):
         """
         リアルタイム監視開始
         Args:
             data_types: 監視するデータ種別
-                0B12 = オッズ（単勝・複勝）
-                0B13 = オッズ（枠連）
-                0B14 = オッズ（馬連）
-                0B15 = オッズ（ワイド）
-                0B16 = オッズ（馬単）
-                0B17 = オッズ（3連複）
-                0B18 = オッズ（3連単）
+                0B31 = オッズ（単勝・複勝）リアルタイム
+                0B32 = オッズ（枠連）
+                0B33 = オッズ（馬連）
+                0B34 = オッズ（ワイド）
+                0B35 = オッズ（馬単）
+                0B36 = オッズ（3連複）
+                0B37 = オッズ（3連単）
         """
         if not self.jvlink:
             print("[ERROR] JV-Linkが初期化されていません")
@@ -90,11 +90,18 @@ class RealtimeOddsMonitor:
                 # 速報系では JVGets を必ず使用（JVReadは暴走の可能性あり）
                 buff_size = 50000
                 buff = bytearray(buff_size)
-                filename = [""]
-                record_spec = [""]
                 
                 # JVGets でデータ取得（速報系で安全）
-                result = self.jvlink.JVGets(buff, buff_size, filename, record_spec)
+                # 戻り値: (code, data) のタプル
+                ret = self.jvlink.JVGets(buff, buff_size)
+                
+                # タプルの場合は最初の要素がコード
+                if isinstance(ret, tuple):
+                    result = ret[0]
+                    data_blob = ret[1] if len(ret) > 1 else None
+                else:
+                    result = ret
+                    data_blob = None
                 
                 if result == 0:
                     # データなし、少し待機
@@ -102,23 +109,45 @@ class RealtimeOddsMonitor:
                     continue
                 elif result == -1:
                     # ファイル切り替え
-                    print(f"  ファイル切り替え: {filename[0]}")
+                    print(f"  ファイル切り替え")
                     continue
                 elif result > 0:
                     # データ取得成功
                     # byte配列から文字列にデコード
-                    data = buff[:result].decode('shift_jis', errors='ignore')
-                    rec_type = record_spec[0]
+                    if data_blob:
+                        # memoryview を bytes に変換してからデコード
+                        data = bytes(data_blob).decode('shift_jis', errors='ignore')
+                    else:
+                        data = buff[:result].decode('shift_jis', errors='ignore')
+                    
+                    # レコードタイプを判定（先頭2文字）
+                    rec_type = data[:2] if len(data) >= 2 else "??"
+                    
+                    # レコードタイプごとのラベル
+                    type_labels = {
+                        "O1": "単勝オッズ",
+                        "O2": "複勝オッズ",
+                        "O3": "枠連オッズ",
+                        "O4": "馬連オッズ",
+                        "O5": "ワイドオッズ",
+                        "O6": "馬単オッズ",
+                        "SE": "成績データ",
+                        "RA": "レース情報",
+                        "HR": "払戻金",
+                        "JC": "騎手変更",
+                        "TC": "調教師変更",
+                    }
+                    label = type_labels.get(rec_type, f"不明({rec_type})")
                     
                     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                    print(f"[{timestamp}] オッズ更新受信: {rec_type}")
+                    print(f"[{timestamp}] 受信: {label}")
                     
                     # レコードタイプに応じて処理
                     if rec_type.startswith("O"):
-                        parser.parse_odds_record(data, rec_type)
+                        parser.parse_odds_record(data.encode('shift_jis'), rec_type)
                         parser.commit()
                 else:
-                    print(f"[ERROR] JVRead エラー: {result}")
+                    print(f"[ERROR] JVGets エラー: {result}")
                     time.sleep(1)
                     
         except KeyboardInterrupt:

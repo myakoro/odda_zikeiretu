@@ -149,18 +149,37 @@ class JVLinkCollector:
                     import time
                     import os
                     import gc
+                    from datetime import datetime, timedelta
                     
                     # 完了済みレース管理用
                     CHECKPOINT_FILE = "data/completed_races.log"
                     ATTEMPT_FILE = "data/last_attempt.txt"
                     
-                    completed_races = set()
+                    completed_races = {}  # {race_id: fetch_date}
+                    today = datetime.now().date()
                     
                     # 1. 完了済みリストの読み込み
                     if os.path.exists(CHECKPOINT_FILE):
                         try:
                             with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
-                                completed_races = set(line.strip() for line in f if line.strip())
+                                for line in f:
+                                    line = line.strip()
+                                    if not line:
+                                        continue
+                                    
+                                    # 新形式: race_id,date または 旧形式: race_id のみ
+                                    if ',' in line:
+                                        race_id, fetch_date_str = line.split(',', 1)
+                                        try:
+                                            fetch_date = datetime.strptime(fetch_date_str, "%Y-%m-%d").date()
+                                            completed_races[race_id] = fetch_date
+                                        except:
+                                            # 日付パースエラー → 旧形式として扱う
+                                            completed_races[race_id] = None
+                                    else:
+                                        # 旧形式（日付なし）
+                                        completed_races[race_id] = None
+                            
                             print(f"  [Resume] 過去の完了履歴 {len(completed_races)} 件を読み込みました。")
                         except:
                             pass
@@ -180,8 +199,8 @@ class JVLinkCollector:
                                 # スキップリストに追加（完了扱いにする）
                                 try:
                                     with open(CHECKPOINT_FILE, "a", encoding="utf-8") as f:
-                                        f.write(f"{last_attempt_rk}\n")
-                                    completed_races.add(last_attempt_rk)
+                                        f.write(f"{last_attempt_rk},{today.strftime('%Y-%m-%d')}\n")
+                                    completed_races[last_attempt_rk] = today
                                 except: pass
                                 
                             # 試行ファイルを削除（検知済みのため）
@@ -197,8 +216,8 @@ class JVLinkCollector:
                         """レース完了を記録"""
                         try:
                             with open(CHECKPOINT_FILE, "a", encoding="utf-8") as f:
-                                f.write(f"{rk}\n")
-                            completed_races.add(rk)
+                                f.write(f"{rk},{today.strftime('%Y-%m-%d')}\n")
+                            completed_races[rk] = today
                             # 成功したので試行ファイルを削除
                             if os.path.exists(ATTEMPT_FILE):
                                 try: os.remove(ATTEMPT_FILE)
@@ -270,21 +289,47 @@ class JVLinkCollector:
                     # 2. 日付ごとにまとめて処理
                     sorted_dates = sorted(date_race_map.keys())
                     
+                    # 定期的なドライバリセット用カウンター
+                    processed_count = 0
+                    
                     for d_str in sorted_dates:
                         keys = date_race_map[d_str]
                         
-                        # 未完了のレースがあるか確認
-                        pending_keys = [k for k in keys if k not in completed_races]
+                        # 未完了のレースまたは30日以上前に取得したレースを対象とする
+                        pending_keys = []
+                        for k in keys:
+                            if k not in completed_races:
+                                # 未取得 → 対象
+                                pending_keys.append(k)
+                            else:
+                                fetch_date = completed_races[k]
+                                if fetch_date is None:
+                                    # 旧形式（日付なし） → 再取得しない
+                                    continue
+                                
+                                days_ago = (today - fetch_date).days
+                                if days_ago >= 30:
+                                    # 30日以上前 → 再取得対象
+                                    pending_keys.append(k)
+                                    print(f"  [Reacquire] {k} ({days_ago}日前に取得済み → 再取得)")
                         
                         if not pending_keys:
-                            print(f"Skipping Date: {d_str} (All {len(keys)} races completed)")
+                            print(f"Skipping Date: {d_str} (All {len(keys)} races completed within 30 days)")
                             continue
                             
                         print(f"\nProcessing Date: {d_str} ({len(pending_keys)}/{len(keys)} races)...")
                         
                         for i, rk in enumerate(keys):
+                            # 30日以内に取得済みならスキップ
                             if rk in completed_races:
-                                continue
+                                fetch_date = completed_races[rk]
+                                if fetch_date is not None:
+                                    days_ago = (today - fetch_date).days
+                                    if days_ago < 30:
+                                        continue  # 30日以内 → スキップ
+                                else:
+                                    # 旧形式 → スキップ
+                                    continue
                                 
                             print(f"    - [{i+1}/{len(keys)}] Race {rk} 取得中...", end=" ", flush=True)
                             
@@ -295,6 +340,25 @@ class JVLinkCollector:
                                 # 成功したらチェックポイント保存 & 試行ファイル削除 (関数内で削除)
                                 mark_race_complete(rk)
                                 print("[OK]")
+                                
+                                # 成功カウントを増やす
+                                processed_count += 1
+                                
+                                # 50レースごとに定期的なドライバリセット（テストのため一時無効化）
+                                # if processed_count % 50 == 0:
+                                #     print(f"\n    [Maintenance] {processed_count}レース処理完了。ドライバをリフレッシュします...")
+                                #     try:
+                                #         self.jvlink.JVClose()
+                                #     except: pass
+                                #     self.jvlink = None
+                                #     gc.collect()
+                                #     time.sleep(3)
+                                #     
+                                #     if not self.connect():
+                                #         print("    [ERROR] ドライバ再接続に失敗しました")
+                                #         return
+                                #     print("    [OK] ドライバリフレッシュ完了")
+                                    
                             else:
                                 print(f"[Failed] -> 3回失敗")
                                 failed_races.append(rk)
@@ -305,7 +369,7 @@ class JVLinkCollector:
                                     except: pass
                             
                             # JRA-VANサーバー負荷軽減とライブラリ安定のため少し待機
-                            time.sleep(0.1)
+                            time.sleep(0.6)
                     
                     # 3. 取得できなかったデータの再取得試行
                     if failed_races:
