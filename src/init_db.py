@@ -28,8 +28,7 @@ def init_db():
 
     # オッズ履歴テーブル
     # 時系列オッズを保存する。データ量が多くなるため適切にインデックスを貼る
-    # race_id + time_stamp でユニークになる想定だが、
-    # 同一時刻の更新もあり得るため、idを主キーとする。
+    # v0.82: UNIQUE制約を追加してON CONFLICT対応
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS odds_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,7 +39,8 @@ def init_db():
         odds_fuku_min REAL, -- 複勝オッズ下限
         odds_fuku_max REAL, -- 複勝オッズ上限
         popularity INTEGER, -- 人気順
-        FOREIGN KEY (race_id) REFERENCES races(race_id)
+        FOREIGN KEY (race_id) REFERENCES races(race_id),
+        UNIQUE(race_id, time_stamp, umaban)  -- v0.82: ON CONFLICT用のUNIQUE制約
     )
     ''')
     

@@ -5,6 +5,7 @@ JRA-VAN Data Lab SDK (JV-Link) を使用して、過去の時系列オッズデ�
 ## 📋 機能
 
 - ✅ **過去データ取得**: JV-Linkから指定期間のレース情報とオッズデータを取得
+- ✅ **ターゲットCSVインポート**: ターゲットからエクスポートした時系列オッズCSVをインポート（1年以上前のデータ取得に対応）
 - ✅ **リアルタイム監視**: オッズ変動をリアルタイムで監視・記録
 - ✅ **データベース保存**: SQLiteにレース情報とオッズ履歴を保存
 - ✅ **Webダッシュボード**: モダンなUIでデータを可視化・分析
@@ -18,6 +19,7 @@ JRA-VAN Data Lab SDK (JV-Link) を使用して、過去の時系列オッズデ�
 │   ├── init_db.py         # データベース初期化
 │   ├── parser.py          # JV-Dataパーサー
 │   ├── collector.py       # 過去データ取得
+│   ├── import_from_target.py # ターゲットCSVインポート
 │   ├── realtime_monitor.py # リアルタイム監視
 │   ├── jvlink_test.py     # JV-Link接続テスト
 │   └── api_server.py      # Flask APIサーバー
@@ -27,6 +29,8 @@ JRA-VAN Data Lab SDK (JV-Link) を使用して、過去の時系列オッズデ�
 │   └── app.js             # JavaScript
 ├── data/                   # データベース保存先
 │   └── odds_history.db    # SQLiteデータベース
+├── target系/               # ターゲットCSVファイル保存先
+├── docs/                   # ドキュメント
 └── JRA-VAN Data Lab. SDK Ver4.9.0.2/  # SDK
 ```
 
@@ -97,6 +101,20 @@ python src/jvlink_test.py
 # collector.pyを編集してサービスキーを設定
 python src/collector.py
 ```
+
+### ターゲットCSVインポート（1年以上前のデータ）
+
+JV-Link APIでは1年以上前のデータが取得できないため、ターゲットからエクスポートしたCSVをインポートできます。
+
+```powershell
+# 単一ファイルをインポート
+python src/import_from_target.py target系/JD07255101.CSV
+
+# 複数ファイルを一括インポート
+python src/import_from_target.py "target系/*.CSV"
+```
+
+詳細は [`docs/ターゲットCSVインポート.md`](docs/ターゲットCSVインポート.md) を参照してください。
 
 ### リアルタイムオッズ監視
 

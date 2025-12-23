@@ -96,18 +96,22 @@ class JVDataParser:
     def parse_odds_record(self, data, rec_type):
         """
         オッズレコード（O1-O6）をパース
+        v0.82: オッズ1(単複枠)レコードから単勝部と複勝部の両方を解析
         """
         try:
             if rec_type.startswith("O1"):
-                self._parse_tansho_fukusho_odds(data)
+                # オッズ1(単複枠)レコード: 単勝部と複勝部の両方を解析
+                self._parse_tansho_odds(data)
+                self._parse_fukusho_odds(data)
             # 他のオッズタイプも同様に実装可能
                 
         except Exception as e:
             pass
     
-    def _parse_tansho_fukusho_odds(self, data):
+    def _parse_tansho_odds(self, data):
         """
-        O1レコード（単勝・複勝オッズ）をパース
+        オッズ1レコードの単勝オッズ部をパース
+        v0.82: 複勝オッズ部は _parse_fukusho_odds() で別途解析
         """
         try:
             # レースキー取得（RAと同じオフセット11）
@@ -120,26 +124,21 @@ class JVDataParser:
             race_id = f"{race_key_year}{race_key_month}{race_key_day}{race_key_ba}{race_key_race_no}"
             
             # 発表時刻 (月日時分) Offset 27-35 (8バイト: MMDDHHMM)
-            # 例: 12251530 -> 12月25日 15時30分
             try:
                 ann_month = data[27:29].decode('ascii', errors='ignore')
                 ann_day = data[29:31].decode('ascii', errors='ignore')
                 ann_hour = data[31:33].decode('ascii', errors='ignore')
                 ann_min = data[33:35].decode('ascii', errors='ignore')
                 
-                # 年はレースキーの年を使う（年またぎ開催などは稀なので簡易実装）
                 timestamp = f"{race_key_year}-{ann_month}-{ann_day} {ann_hour}:{ann_min}"
             except:
                 timestamp = f"{race_key_year}-{race_key_month}-{race_key_day} 00:00"
             
-            # 馬番ごとのオッズ
-            # 調査結果: オフセット43から開始、1頭あたり8バイト
+            # 単勝オッズ部: オフセット43から開始、1頭あたり8バイト
             # [馬番2][単勝4][人気2]
-            
             offset = 43
             
             for i in range(28):
-                # 馬番 (2バイト)
                 umaban_str = data[offset:offset+2].decode('ascii', errors='ignore').strip()
                 if not umaban_str:
                     break
@@ -147,7 +146,7 @@ class JVDataParser:
                 if umaban == 0:
                     break
                 
-                # 単勝オッズ (4バイト)
+                # 単勝オッズ (4バイト、10倍値)
                 tansho_str = data[offset+2:offset+6].decode('ascii', errors='ignore').strip()
                 tansho_odds = self._safe_float(tansho_str) / 10
                 
@@ -155,18 +154,104 @@ class JVDataParser:
                 popularity_str = data[offset+6:offset+8].decode('ascii', errors='ignore').strip()
                 popularity = self._safe_int(popularity_str)
                 
-                # 複勝はO1レコードには含まれていないか、構造が異なるため今回は0扱いでスキップ
-                fukusho_min = 0.0
-                fukusho_max = 0.0
-                
-                # データベースに保存
+                # データベースに保存(複勝は0.0、後で_parse_fukusho_oddsがUPDATE)
                 self.cursor.execute('''
                     INSERT INTO odds_history 
                     (race_id, time_stamp, umaban, odds_tan, odds_fuku_min, odds_fuku_max, popularity)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (race_id, timestamp, umaban, tansho_odds, fukusho_min, fukusho_max, popularity))
+                    VALUES (?, ?, ?, ?, 0.0, 0.0, ?)
+                    ON CONFLICT(race_id, time_stamp, umaban) DO UPDATE SET
+                    odds_tan = excluded.odds_tan,
+                    popularity = excluded.popularity
+                ''', (race_id, timestamp, umaban, tansho_odds, popularity))
                 
                 offset += 8
+            
+        except Exception as e:
+            pass
+    
+    def _parse_fukusho_odds(self, data):
+        """
+        オッズ1レコードの複勝オッズ部をパース
+        v0.82: 新規追加。JV-Data仕様書 Ver 4.9.0.1 に基づく実装。
+        """
+        try:
+            # レースキー取得(単勝部と同じ)
+            race_key_year = data[11:15].decode('ascii', errors='ignore')
+            race_key_month = data[15:17].decode('ascii', errors='ignore')
+            race_key_day = data[17:19].decode('ascii', errors='ignore')
+            race_key_ba = data[19:21].decode('ascii', errors='ignore')
+            race_key_race_no = data[25:27].decode('ascii', errors='ignore')
+            
+            race_id = f"{race_key_year}{race_key_month}{race_key_day}{race_key_ba}{race_key_race_no}"
+            
+            # 発表時刻取得(単勝部と同じ)
+            try:
+                ann_month = data[27:29].decode('ascii', errors='ignore')
+                ann_day = data[29:31].decode('ascii', errors='ignore')
+                ann_hour = data[31:33].decode('ascii', errors='ignore')
+                ann_min = data[33:35].decode('ascii', errors='ignore')
+                
+                timestamp = f"{race_key_year}-{ann_month}-{ann_day} {ann_hour}:{ann_min}"
+            except:
+                timestamp = f"{race_key_year}-{race_key_month}-{race_key_day} 00:00"
+            
+            # 複勝オッズ部の開始位置を計算
+            # 単勝部: オフセット43 + (28頭 × 8バイト) = 267
+            TANSHO_START = 43
+            UMA_MAX = 28
+            FUKUSHO_START = TANSHO_START + (UMA_MAX * 8)  # = 267
+            
+            # デバッグ: レコードヘッダーを確認
+            if race_id == "202512210909":
+                rec_type_id = data[0:2].decode('ascii', errors='ignore')
+                data_kbn = data[2:3].decode('ascii', errors='ignore')
+                print(f"\nDEBUG レコード [{race_id}]:")
+                print(f"  レコード種別ID: '{rec_type_id}'")
+                print(f"  データ区分: '{data_kbn}'")
+                print(f"  レコード長: {len(data)} bytes")
+                print(f"  ヘッダー(0-43): {data[0:43].hex()}")
+            
+            # 馬番ごとのオッズ(1頭あたり10バイト)
+            offset = FUKUSHO_START
+            
+            for i in range(UMA_MAX):
+                # 馬番 (2バイト)
+                umaban_str = data[offset:offset+2].decode('ascii', errors='ignore').strip()
+                if not umaban_str:
+                    break  # 馬番が空なら終了
+                umaban = self._safe_int(umaban_str)
+                if umaban == 0:
+                    break  # 馬番が0なら終了
+                
+                
+                # 複勝オッズ下限 (4バイト、10倍値) - JV-Dataでは下限が先
+                fuku_min_str = data[offset+2:offset+6].decode('ascii', errors='ignore').strip()
+                fuku_min = self._safe_float(fuku_min_str) / 10
+                
+                # 複勝オッズ上限 (4バイト、10倍値) - JV-Dataでは上限が後
+                fuku_max_str = data[offset+6:offset+10].decode('ascii', errors='ignore').strip()
+                fuku_max = self._safe_float(fuku_max_str) / 10
+                
+                # デバッグ: 1番のデータを出力
+                if umaban == 1 and race_id == "202512210909":
+                    print(f"DEBUG 1番 [{race_id}]: offset={offset}")
+                    print(f"  生データ(hex): {data[offset:offset+10].hex()}")
+                    print(f"  馬番: '{umaban_str}'")
+                    print(f"  min_str: '{fuku_min_str}' -> {fuku_min}")
+                    print(f"  max_str: '{fuku_max_str}' -> {fuku_max}")
+                    print(f"  保存前: min={fuku_min}, max={fuku_max}")
+                
+                # データベースに保存(単勝部で既にINSERTされているのでUPDATE)
+                self.cursor.execute('''
+                    INSERT INTO odds_history 
+                    (race_id, time_stamp, umaban, odds_tan, odds_fuku_min, odds_fuku_max, popularity)
+                    VALUES (?, ?, ?, 0.0, ?, ?, 0)
+                    ON CONFLICT(race_id, time_stamp, umaban) DO UPDATE SET
+                    odds_fuku_min = excluded.odds_fuku_min,
+                    odds_fuku_max = excluded.odds_fuku_max
+                ''', (race_id, timestamp, umaban, fuku_min, fuku_max))
+                
+                offset += 10
             
         except Exception as e:
             pass

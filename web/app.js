@@ -75,6 +75,11 @@ function viewRaceDetails(raceId) {
     analyzeRace();
 }
 
+// グローバル変数: Chart.jsインスタンス
+let oddsChart = null;
+let currentOddsData = null;
+let currentDisplayMode = 'both';
+
 // オッズ分析
 async function analyzeRace() {
     const raceId = document.getElementById('analysis-race-id').value;
@@ -92,10 +97,24 @@ async function analyzeRace() {
         
         if (oddsData.length === 0) {
             resultDiv.innerHTML = '<p class="empty-state">オッズデータが見つかりませんでした</p>';
+            document.getElementById('odds-toggle-buttons').style.display = 'none';
+            document.getElementById('chart-legend').style.display = 'none';
+            document.getElementById('chart-wrapper').style.display = 'none';
             return;
         }
         
-        // 馬番ごとにグループ化
+        // データを保存
+        currentOddsData = oddsData;
+        
+        // UI要素を表示
+        document.getElementById('odds-toggle-buttons').style.display = 'flex';
+        document.getElementById('chart-legend').style.display = 'flex';
+        document.getElementById('chart-wrapper').style.display = 'block';
+        
+        // グラフを描画
+        renderOddsChart(oddsData);
+        
+        // 馬番ごとにグループ化してサマリー表示
         const groupedByUmaban = {};
         oddsData.forEach(record => {
             if (!groupedByUmaban[record.umaban]) {
@@ -114,8 +133,9 @@ async function analyzeRace() {
             html += `
                 <div style="background: var(--bg-dark); padding: 15px; margin: 10px 0; border-radius: 10px;">
                     <h4>${umaban}番 (人気: ${latest.popularity}位)</h4>
-                    <p>最新オッズ: <strong>${latest.odds_tan.toFixed(1)}</strong>倍</p>
-                    <p>初回オッズ: ${first.odds_tan.toFixed(1)}倍 → 変動率: <span style="color: ${change > 0 ? 'var(--danger-color)' : 'var(--success-color)'};">${change > 0 ? '+' : ''}${change}%</span></p>
+                    <p>最新単勝オッズ: <strong>${latest.odds_tan.toFixed(1)}</strong>倍</p>
+                    <p>最新複勝オッズ: <strong>${latest.odds_fuku_min.toFixed(1)} - ${latest.odds_fuku_max.toFixed(1)}</strong>倍</p>
+                    <p>初回オッズ: ${first.odds_tan.toFixed(1)}倍 → 変動率: <span style="color: ${change > 0 ? 'var(--danger-color)' : 'var(--success-color)'};}">${change > 0 ? '+' : ''}${change}%</span></p>
                     <p>記録数: ${records.length}件</p>
                 </div>
             `;
@@ -210,4 +230,182 @@ async function exportData() {
         console.error('エクスポートに失敗:', error);
         alert('エクスポートに失敗しました');
     }
+}
+
+// オッズグラフ描画
+function renderOddsChart(oddsData) {
+    // 馬番ごとにグループ化
+    const groupedByUmaban = {};
+    oddsData.forEach(record => {
+        if (!groupedByUmaban[record.umaban]) {
+            groupedByUmaban[record.umaban] = [];
+        }
+        groupedByUmaban[record.umaban].push(record);
+    });
+    
+    // 馬番でソート
+    const sortedUmabans = Object.keys(groupedByUmaban).sort((a, b) => parseInt(a) - parseInt(b));
+    
+    // 最初の馬番のデータからタイムスタンプを取得
+    const firstUmaban = sortedUmabans[0];
+    const timestamps = groupedByUmaban[firstUmaban].map(record => record.time_stamp);
+    
+    // データセットを作成
+    const datasets = [];
+    
+    // 色のパレット
+    const colors = [
+        '#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+        '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1'
+    ];
+    
+    sortedUmabans.forEach((umaban, index) => {
+        const records = groupedByUmaban[umaban];
+        const color = colors[index % colors.length];
+        
+        // 単勝オッズデータセット
+        datasets.push({
+            label: `${umaban}番 単勝`,
+            data: records.map(r => r.odds_tan),
+            borderColor: color,
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            pointRadius: 3,
+            pointHoverRadius: 5,
+            tension: 0.1,
+            hidden: false,
+            oddsType: 'tan',
+            umaban: umaban
+        });
+        
+        // 複勝オッズ下限データセット
+        datasets.push({
+            label: `${umaban}番 複勝下限`,
+            data: records.map(r => r.odds_fuku_min),
+            borderColor: color,
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            pointRadius: 0,
+            tension: 0.1,
+            hidden: false,
+            oddsType: 'fuku',
+            umaban: umaban,
+            fill: '+1'
+        });
+        
+        // 複勝オッズ上限データセット
+        datasets.push({
+            label: `${umaban}番 複勝上限`,
+            data: records.map(r => r.odds_fuku_max),
+            borderColor: color,
+            backgroundColor: color + '33',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            pointRadius: 0,
+            tension: 0.1,
+            hidden: false,
+            oddsType: 'fuku',
+            umaban: umaban,
+            fill: false
+        });
+    });
+    
+    // 既存のチャートを破棄
+    if (oddsChart) {
+        oddsChart.destroy();
+    }
+    
+    // チャートを作成
+    const ctx = document.getElementById('odds-analysis-chart').getContext('2d');
+    oddsChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: timestamps,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: false
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false,
+                    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                    titleColor: '#f1f5f9',
+                    bodyColor: '#f1f5f9',
+                    borderColor: '#334155',
+                    borderWidth: 1
+                }
+            },
+            scales: {
+                x: {
+                    display: true,
+                    title: {
+                        display: true,
+                        text: '時刻',
+                        color: '#94a3b8'
+                    },
+                    ticks: {
+                        color: '#94a3b8',
+                        maxRotation: 45,
+                        minRotation: 45
+                    },
+                    grid: {
+                        color: '#334155'
+                    }
+                },
+                y: {
+                    display: true,
+                    title: {
+                        display: true,
+                        text: 'オッズ',
+                        color: '#94a3b8'
+                    },
+                    ticks: {
+                        color: '#94a3b8'
+                    },
+                    grid: {
+                        color: '#334155'
+                    }
+                }
+            },
+            interaction: {
+                mode: 'nearest',
+                axis: 'x',
+                intersect: false
+            }
+        }
+    });
+}
+
+// オッズ表示切り替え
+function toggleOddsDisplay(mode) {
+    if (!oddsChart) return;
+    
+    currentDisplayMode = mode;
+    
+    // ボタンのアクティブ状態を更新
+    document.querySelectorAll('.toggle-btn').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.mode === mode) {
+            btn.classList.add('active');
+        }
+    });
+    
+    // データセットの表示/非表示を切り替え
+    oddsChart.data.datasets.forEach(dataset => {
+        if (mode === 'both') {
+            dataset.hidden = false;
+        } else if (mode === 'tan') {
+            dataset.hidden = dataset.oddsType !== 'tan';
+        } else if (mode === 'fuku') {
+            dataset.hidden = dataset.oddsType !== 'fuku';
+        }
+    });
+    
+    oddsChart.update();
 }

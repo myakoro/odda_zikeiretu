@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>投資競馬 - オッズ分析ダッシュボード</title>
     <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -94,6 +95,39 @@
                         <input type="text" id="analysis-race-id" class="input-field" placeholder="例: 202412100501">
                         <button class="btn-primary" onclick="analyzeRace()">分析開始</button>
                     </div>
+                    
+                    <!-- オッズ表示切り替えボタン -->
+                    <div class="odds-toggle-buttons" id="odds-toggle-buttons" style="display: none;">
+                        <button class="toggle-btn active" data-mode="both" onclick="toggleOddsDisplay('both')">両方表示</button>
+                        <button class="toggle-btn" data-mode="tan" onclick="toggleOddsDisplay('tan')">単勝のみ</button>
+                        <button class="toggle-btn" data-mode="fuku" onclick="toggleOddsDisplay('fuku')">複勝のみ</button>
+                    </div>
+                    
+                    <!-- グラフ凡例 -->
+                    <div class="chart-legend" id="chart-legend" style="display: none;">
+                        <div class="legend-item">
+                            <span class="legend-line legend-tan"></span>
+                            <span>単勝オッズ</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-line legend-fuku-min"></span>
+                            <span>複勝下限</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-line legend-fuku-max"></span>
+                            <span>複勝上限</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-area legend-fuku-area"></span>
+                            <span>複勝範囲</span>
+                        </div>
+                    </div>
+                    
+                    <!-- グラフエリア -->
+                    <div class="chart-wrapper" id="chart-wrapper" style="display: none;">
+                        <canvas id="odds-analysis-chart"></canvas>
+                    </div>
+                    
                     <div id="analysis-result" class="analysis-result">
                         <p class="empty-state">レースIDを入力して分析を開始してください</p>
                     </div>
