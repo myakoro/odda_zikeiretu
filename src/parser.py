@@ -12,6 +12,9 @@ class JVDataParser:
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path)
         self.cursor = self.conn.cursor()
+        # WALモードを有効化（書き込み性能向上、ロック競合軽減）
+        self.cursor.execute("PRAGMA journal_mode=WAL")
+        self.cursor.execute("PRAGMA synchronous=NORMAL")
     
     def _safe_float(self, val_str):
         """文字列を安全にfloatに変換する（非数値は0.0）"""
@@ -88,10 +91,10 @@ class JVDataParser:
                 INSERT OR REPLACE INTO races (race_id, date, ba_code, race_no, race_name, start_time)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (race_id, race_date, race_key_ba, self._safe_int(race_key_race_no), race_name, start_time))
+            print(f"  [DB] レース情報保存: {race_id} ({race_name})")
             
         except Exception as e:
-            # print(f"[ERROR] RAレコードパースエラー: {e}")
-            pass
+            print(f"  [ERROR] RAレコードパースエラー: {e}")
     
     def parse_odds_record(self, data, rec_type):
         """
@@ -106,7 +109,7 @@ class JVDataParser:
             # 他のオッズタイプも同様に実装可能
                 
         except Exception as e:
-            pass
+            print(f"  [ERROR] オッズレコードパースエラー ({rec_type}): {e}")
     
     def _parse_tansho_odds(self, data):
         """
@@ -167,7 +170,7 @@ class JVDataParser:
                 offset += 8
             
         except Exception as e:
-            pass
+            print(f"  [ERROR] 単勝オッズパースエラー: {e}")
     
     def _parse_fukusho_odds(self, data):
         """
@@ -212,35 +215,36 @@ class JVDataParser:
                 print(f"  ヘッダー(0-43): {data[0:43].hex()}")
             
             # 馬番ごとのオッズ(1頭あたり10バイト)
+            # [馬番2][複勝下限4][複勝上限4]
             offset = FUKUSHO_START
             
             for i in range(UMA_MAX):
+                if offset + 10 > len(data):
+                    break
+
                 # 馬番 (2バイト)
                 umaban_str = data[offset:offset+2].decode('ascii', errors='ignore').strip()
-                if not umaban_str:
-                    break  # 馬番が空なら終了
-                umaban = self._safe_int(umaban_str)
-                if umaban == 0:
-                    break  # 馬番が0なら終了
+                if not umaban_str or not umaban_str.isdigit():
+                    # 馬番が数字でない、または空なら終了
+                    break
                 
+                umaban = int(umaban_str)
+                if umaban <= 0:
+                    break
                 
-                # 複勝オッズ下限 (4バイト、10倍値) - JV-Dataでは下限が先
-                fuku_min_str = data[offset+2:offset+6].decode('ascii', errors='ignore').strip()
-                fuku_min = self._safe_float(fuku_min_str) / 10
+                # 複勝オッズ下限 (4バイト、10倍値)
+                fuku_min_val = self._safe_float(data[offset+2:offset+6].decode('ascii', errors='ignore'))
+                fuku_min = fuku_min_val / 10.0
                 
-                # 複勝オッズ上限 (4バイト、10倍値) - JV-Dataでは上限が後
-                fuku_max_str = data[offset+6:offset+10].decode('ascii', errors='ignore').strip()
-                fuku_max = self._safe_float(fuku_max_str) / 10
+                # 複勝オッズ上限 (4バイト、10倍値)
+                fuku_max_val = self._safe_float(data[offset+6:offset+10].decode('ascii', errors='ignore'))
+                fuku_max = fuku_max_val / 10.0
                 
-                # デバッグ: 1番のデータを出力
-                if umaban == 1 and race_id == "202512210909":
-                    print(f"DEBUG 1番 [{race_id}]: offset={offset}")
-                    print(f"  生データ(hex): {data[offset:offset+10].hex()}")
-                    print(f"  馬番: '{umaban_str}'")
-                    print(f"  min_str: '{fuku_min_str}' -> {fuku_min}")
-                    print(f"  max_str: '{fuku_max_str}' -> {fuku_max}")
-                    print(f"  保存前: min={fuku_min}, max={fuku_max}")
-                
+                # 異常値チェック (未発表や異常データ)
+                if fuku_min > fuku_max and fuku_max > 0:
+                    # 入れ替わっている、または異常値の場合はスキップまたは補正
+                    continue
+
                 # データベースに保存(単勝部で既にINSERTされているのでUPDATE)
                 self.cursor.execute('''
                     INSERT INTO odds_history 
@@ -254,7 +258,7 @@ class JVDataParser:
                 offset += 10
             
         except Exception as e:
-            pass
+            print(f"  [ERROR] 複勝オッズパースエラー: {e}")
     
     def commit(self):
         """変更をコミット"""

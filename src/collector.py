@@ -20,8 +20,15 @@ class JVLinkCollector:
             service_key: JRA-VANのサービスキー（契約時に取得）
         """
         self.service_key = service_key
-        self.jvlink = None
         self.conn = None
+        # DBパスを絶対パス化して、実行ディレクトリによる不一致を完全に防ぐ
+        import os
+        self.db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "odds_history.db"))
+        
+        # 固定バッファを初期化(32bit環境での断片化対策)
+        # 32KB に縮小。断片化に強く、ドライバの動作を最も安定させるサイズ。
+        self._buff_size = 32768
+        self._buff = bytearray(self._buff_size)
         
     def connect(self):
         """JV-Linkへの接続とDB接続"""
@@ -45,9 +52,26 @@ class JVLinkCollector:
             else:
                 print(f"JVInit結果: {result}")
             
+            
+            # 既存の接続があれば閉じる
+            if self.conn:
+                try: self.conn.close()
+                except: pass
+            
             # データベース接続
-            self.conn = sqlite3.connect(DB_PATH)
-            print(f"[OK] データベース接続: {DB_PATH}")
+            self.conn = sqlite3.connect(self.db_path, timeout=30)
+            cur = self.conn.cursor()
+            
+            # 診断情報ログ
+            db_list = cur.execute("PRAGMA database_list").fetchall()
+            print(f"  [DB] 接続成功: {self.db_path}")
+            print(f"  [DB] 物理ファイル: {db_list[0][2]}")
+            
+            # WALモードを有効化（書き込み性能向上、ロック競合軽減）
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA synchronous=NORMAL")
+            cur.execute("PRAGMA cache_size=10000")
+            print(f"[OK] データベース接続: {self.db_path}")
             
             return True
             
@@ -235,6 +259,9 @@ class JVLinkCollector:
 
                     def process_race_with_retry(rk, max_retries=3):
                         """指定したレースをリトライ付きで処理する. 成功ならTrue"""
+                        import gc
+                        gc.collect() # 毎レース開始前に大掃除
+                        
                         for attempt in range(max_retries):
                             try:
                                 # 2回目以降は少し待つ
@@ -242,24 +269,27 @@ class JVLinkCollector:
                                     time.sleep(2.0)
                                     print(f"      -> リトライ中 ({attempt+1}/{max_retries})...")
                                     
-                                    # ★重要: リトライ時はJVLinkを再初期化する（不安定状態の解消）
-                                    print("      -> [Re-Init] 接続を再確立しています...")
-                                    try:
-                                        self.jvlink.JVClose()
+                                # 常に初期化してから開始（安定性の究極対策）
+                                if attempt >= 0:
+                                    # print(f"      -> [Init] レース開始前のクリーンアップ...")
+                                    try: 
+                                        if self.jvlink: self.jvlink.JVClose()
                                     except: pass
                                     self.jvlink = None
+                                    import gc
                                     gc.collect()
                                     
-                                    # 再接続
                                     if not self.connect():
-                                         print("      -> [FATAL] 再接続に失敗しました")
+                                         print("      -> [FATAL] 接続に失敗しました")
                                          return False
                                          
                                 res_rt = self.jvlink.JVRTOpen("0B41", rk)
                                 
                                 if res_rt == 0:
                                     if self._read_jvdata():
-                                        self.jvlink.JVClose()
+                                        try: self.jvlink.JVClose()
+                                        except: pass
+                                        self.jvlink = None # 確実に捨てる
                                         return True
                                     else:
                                         print(f"      -> 読み込みエラー。リトライします。")
@@ -274,12 +304,10 @@ class JVLinkCollector:
                                         print("      -> [SKIP] データが存在しないか、取得できません (Code=-1/-111/-203)。")
                                         return False
 
-                            except Exception as e:
-                                print(f"      -> [ERROR] 例外発生: {repr(e)}")
-                                try: self.jvlink.JVClose()
-                                except: pass
-                            except Exception as e:
-                                print(f"      -> [ERROR] 例外発生: {repr(e)}")
+                            except BaseException as e_race:
+                                import traceback
+                                print(f"      -> [FATAL] レース処理中に例外発生: {repr(e_race)}")
+                                traceback.print_exc()
                                 try: self.jvlink.JVClose()
                                 except: pass
                         
@@ -291,6 +319,7 @@ class JVLinkCollector:
                     
                     # 定期的なドライバリセット用カウンター
                     processed_count = 0
+                    race_interval_count = 0  # 24レース毎のインターバル用カウンター
                     
                     for d_str in sorted_dates:
                         keys = date_race_map[d_str]
@@ -344,20 +373,20 @@ class JVLinkCollector:
                                 # 成功カウントを増やす
                                 processed_count += 1
                                 
-                                # 50レースごとに定期的なドライバリセット（テストのため一時無効化）
-                                # if processed_count % 50 == 0:
-                                #     print(f"\n    [Maintenance] {processed_count}レース処理完了。ドライバをリフレッシュします...")
-                                #     try:
-                                #         self.jvlink.JVClose()
-                                #     except: pass
-                                #     self.jvlink = None
-                                #     gc.collect()
-                                #     time.sleep(3)
-                                #     
-                                #     if not self.connect():
-                                #         print("    [ERROR] ドライバ再接続に失敗しました")
-                                #         return
-                                #     print("    [OK] ドライバリフレッシュ完了")
+                                # 48レースごとに定期的なドライバリセット（最大の安定化処置）
+                                if processed_count % 48 == 0:
+                                    print(f"\n    [Maintenance] {processed_count}レース処理完了。ドライバをリフレッシュします...")
+                                    try:
+                                        self.jvlink.JVClose()
+                                    except: pass
+                                    self.jvlink = None
+                                    gc.collect()
+                                    time.sleep(10)  # ドライバ完全初期化のため10秒待機
+                                    
+                                    if not self.connect():
+                                        print("    [ERROR] ドライバ再接続に失敗しました")
+                                        return
+                                    print("    [OK] ドライバリフレッシュ完了")
                                     
                             else:
                                 print(f"[Failed] -> 3回失敗")
@@ -370,6 +399,14 @@ class JVLinkCollector:
                             
                             # JRA-VANサーバー負荷軽減とライブラリ安定のため少し待機
                             time.sleep(0.6)
+                            
+                            # 12レース毎に5秒のインターバル + メモリ解放
+                            race_interval_count += 1
+                            if race_interval_count % 12 == 0:
+                                print(f"\n    [Interval] {race_interval_count}レース処理完了。メモリ解放のため5秒待機します...")
+                                gc.collect()  # 明示的にメモリ解放
+                                time.sleep(5.0)
+                                print("    [Interval] 再開します")
                     
                     # 3. 取得できなかったデータの再取得試行
                     if failed_races:
@@ -445,7 +482,9 @@ class JVLinkCollector:
             if result == 0:
                 # データ読み込み処理
                 print(f"  読み込みファイル数: {read_count}, ダウンロード数: {download_count}")
+                print("  [DEBUG] _read_jvdata 呼び出し直前...")
                 self._read_jvdata()
+                print("  [DEBUG] _read_jvdata 呼び出し完了")
             else:
                 print(f"[WARNING] データ取得失敗: エラーコード {result}")
                 if result == -112:
@@ -455,10 +494,20 @@ class JVLinkCollector:
                 elif result == -203:
                     print("  → 該当データが存在しません")
                 
-        except Exception as e:
+            print("  [DEBUG] fetch_historical_odds 正常終了処理中...")
+            try: self.jvlink.JVClose()
+            except: pass
+            
+        except BaseException as root_e:
             import traceback
-            print(f"[ERROR] データ取得エラー: {e}")
+            print("\n" + "!"*50)
+            print(f"[CRITICAL FATAL] プログラムが予期せず終了しました:")
+            print(f"種別: {type(root_e)}")
+            print(f"内容: {repr(root_e)}")
+            print("!"*50)
             traceback.print_exc()
+            try: self.jvlink.JVClose()
+            except: pass
         finally:
             if self.jvlink:
                 try:
@@ -468,28 +517,50 @@ class JVLinkCollector:
     
     def _read_jvdata(self):
         """JVDataからデータを読み込む. 成功ならTrue"""
-        print("\nデータ読み込み中...")
-        record_count = 0
-        parser = JVDataParser(DB_PATH)
-        success = True
-        
         try:
+            print(f"\n  [DEBUG] _read_jvdata 開始 (Thread ID: {hex(id(self))})")
+            
+            # parser側の接続を最新の状態にする
+            self.parser = JVDataParser(self.db_path)
+            self.parser.conn = self.conn
+            self.parser.cursor = self.conn.cursor()
+            
+            records = 0
+            success = True
+            
+            print(f"  [DEBUG] 読み込みループ開始 (BufferSize: {self._buff_size})")
             loop_count = 0
+            # 最初の読み込み前に少し待機してドライバを安定させる
+            import time
+            time.sleep(0.5)
+            
             while True:
                 loop_count += 1
-                buff_size = 40000 # バッファサイズを標準的に戻す（安定重視）
-                buff = bytearray(buff_size)
-                
-                ret = self.jvlink.JVGets(buff, buff_size)
+                # ドライバに一息つかせる（重要：これがないと11R等の大量データでハングアップする）
+                if loop_count % 10 == 0:
+                    time.sleep(0.01)
+
+                try:
+                    # 呼び出し直前にログ（ここから戻ってこないならドライバのフリーズ）
+                    if loop_count < 10 or loop_count % 100 == 0:
+                        print(f"      [DEBUG] JVGets 実行中... (Loop: {loop_count})")
+                    
+                    ret = self.jvlink.JVGets(self._buff, self._buff_size)
+                    
+                    if loop_count < 10 or loop_count % 100 == 0:
+                        print(f"      [DEBUG] JVGets 帰還 (Code: {ret[0] if isinstance(ret, tuple) else ret})")
+                except Exception as e_com:
+                    print(f"  [FATAL] JVGets 呼び出し自体が失敗: {e_com}")
+                    return False
                 
                 if isinstance(ret, tuple):
                     result = ret[0]
                     if len(ret) > 1:
                         data_blob = ret[1]
                         try: raw_data = bytes(data_blob)
-                        except: raw_data = buff[:result] if result > 0 else b""
+                        except: raw_data = self._buff[:result] if result > 0 else b""
                     else:
-                        raw_data = buff[:result]
+                        raw_data = self._buff[:result]
                     filename = ret[2] if len(ret) > 2 else ""
                 else:
                     result = ret
@@ -503,7 +574,7 @@ class JVLinkCollector:
                     continue
                 elif result > 0:
                     record_count += 1
-                    current_data = raw_data[:result]
+                    current_data = self._buff[:result] # ここでコピーが発生するが、resultが小さいので安全
                     
                     try:
                         rec_type = current_data[:2].decode('ascii', errors='ignore')
@@ -512,11 +583,13 @@ class JVLinkCollector:
 
                     if rec_type == "RA":
                         parser.parse_race_record(current_data)
+                        parser.commit()  # レース情報は即座にコミット
                     elif rec_type.startswith("O"):
                         parser.parse_odds_record(current_data, rec_type)
-                        
-                    if record_count % 500 == 0:
-                         parser.commit()
+                        # オッズレコードは100件ごとにコミット（バランス重視）
+                        if record_count % 100 == 0:
+                            parser.commit()
+                            print(f"    - [Progress] {record_count} レコード処理中 (最新: {filename})")
                 else:
                     print(f"[WARNING] JVRead エラー: {result}")
                     success = False
@@ -525,13 +598,16 @@ class JVLinkCollector:
         except Exception as e:
             import traceback
             print(f"[ERROR] データ読み込みエラー: {e}")
-            # traceback.print_exc()
+            traceback.print_exc()  # デバッグ用: 詳細なエラー情報を表示
             success = False
         finally:
+            print(f"  [DEBUG] _read_jvdata 終了処理中 (Records: {record_count})")
             parser.commit()
             parser.close()
+            import gc
+            gc.collect() # 確保した一時メモリを即座に解放
         
-        print(f"\n合計 {record_count} レコードを処理しました")
+        print(f"  [DEBUG] _read_jvdata 正常終了 (Total: {record_count} records)")
         return success
     
     def close(self):

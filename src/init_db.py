@@ -46,6 +46,12 @@ def init_db():
     
     # 馬連・馬単などのオッズテーブルも必要に応じて追加するが、まずは単複から。
 
+    
+    # WALモードを有効化（書き込み性能向上、ロック競合軽減）
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA cache_size=10000")
+    
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_odds_race_time ON odds_history (race_id, time_stamp)')
 
     conn.commit()
